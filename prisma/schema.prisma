@@ -7,8 +7,17 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // Conexão direta (sem PgBouncer), só para `prisma migrate`. Necessária
+  // em produção (Neon/Vercel Postgres): a conexão pooled do DATABASE_URL
+  // não suporta advisory locks de sessão, e `migrate deploy` trava com
+  // erro P1002 ("Timed out trying to acquire a postgres advisory lock")
+  // sem isso. Prisma usa `directUrl` automaticamente para migrations,
+  // mantendo `url` (pooled) para as queries normais do Prisma Client.
+  // Localmente, sem pooler, aponta pro mesmo banco (fallback em .env
+  // que não define DATABASE_URL_UNPOOLED — ver .env.example).
+  directUrl = env("DATABASE_URL_UNPOOLED")
 }
 
 // ───────────────────────────────────────────────────────────────────────────
