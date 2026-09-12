@@ -1,0 +1,646 @@
+// Trilheo — Fase 1 (Fundação) + Fase 2/Marco 1 (Inovação: Idea, IdeaBoard, pipeline)
+// Schema multi-tenant: toda entidade abaixo de Organization carrega
+// organizationId obrigatório e indexado (isolamento entre organizações).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Papéis de membro da organização (conjunto fixo da plataforma —
+// diferente de Task.status/priority, que são String por design,
+// ver seção "Extensibilidade" do prompt da Fase 1).
+// ───────────────────────────────────────────────────────────────────────────
+enum MemberRole {
+  OWNER
+  ADMIN
+  GESTOR
+  LIDER
+  MEMBRO
+  CONVIDADO
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Organization — raiz do multi-tenant
+// ───────────────────────────────────────────────────────────────────────────
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Billing (Fase 7) — Stripe. 1:1 com Organization, por isso são
+  // colunas aqui e não um modelo `Subscription` separado (não há
+  // relação 1:N a modelar, e um Business Case já mostrou que campos
+  // 1:1 direto na entidade dona é o padrão deste schema quando não há
+  // motivo para uma tabela própria). `plan` é a fonte de verdade local
+  // (o que o app usa para checar limites); os campos `stripe*` e
+  // `subscriptionStatus` são sincronizados pelo webhook, nunca
+  // escritos diretamente por uma action do usuário.
+  plan                 String    @default("FREE")
+  stripeCustomerId     String?   @unique
+  stripeSubscriptionId String?   @unique
+  subscriptionStatus   String?
+  currentPeriodEnd     DateTime?
+
+  members        OrganizationMember[]
+  workspaces     Workspace[]
+  spaces         Space[]
+  folders        Folder[]
+  lists          List[]
+  tasks          Task[]
+  comments       Comment[]
+  attachments    Attachment[]
+  // Fase 2 (Inovação) — relations leves, migração leve.
+  ideaBoards         IdeaBoard[]
+  ideaPipelines      IdeaPipeline[]
+  ideaPipelineStages IdeaPipelineStage[]
+  ideas              Idea[]
+  improvementTools   ImprovementTool[]
+  taskDependencies   TaskDependency[]
+  businessCases      BusinessCase[]
+  benefitRecords     BenefitRecord[]
+  formTemplates      FormTemplate[]
+  formFields         FormField[]
+  formSubmissions    FormSubmission[]
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// User — conta de usuário, independente de organização
+// (um usuário pode pertencer a mais de uma Organization no futuro)
+// ───────────────────────────────────────────────────────────────────────────
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships         OrganizationMember[]
+  assignedTasks       Task[]               @relation("TaskAssignee")
+  comments            Comment[]
+  uploadedAttachments Attachment[]
+  authoredIdeas       Idea[]               // Fase 2: quem registrou a ideia
+  createdImprovementTools ImprovementTool[] // Fase 3: quem criou a análise
+
+  // Fase 5 (Business Case) — quatro papéis distintos que um User pode
+  // ter em relação a um BusinessCase; nomes de relation explícitos
+  // porque há mais de uma FK de User em BusinessCase.
+  createdBusinessCases        BusinessCase[]  @relation("BusinessCaseCreatedBy")
+  gestorApprovedBusinessCases BusinessCase[]  @relation("BusinessCaseGestorApproval")
+  adminApprovedBusinessCases  BusinessCase[]  @relation("BusinessCaseAdminApproval")
+  rejectedBusinessCases       BusinessCase[]  @relation("BusinessCaseRejection")
+  recordedBenefitRecords      BenefitRecord[]
+
+  // Fase 7 (coleta mobile)
+  createdFormTemplates  FormTemplate[]
+  submittedForms        FormSubmission[]
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// OrganizationMember — join table User <-> Organization com papel
+// ───────────────────────────────────────────────────────────────────────────
+model OrganizationMember {
+  id             String     @id @default(cuid())
+  organizationId String
+  userId         String
+  role           MemberRole
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([organizationId])
+  @@index([userId])
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Hierarquia de workspace: Organization -> Workspace -> Space ->
+// Folder -> List -> Task -> Subtask
+// ───────────────────────────────────────────────────────────────────────────
+model Workspace {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  spaces       Space[]
+
+  @@index([organizationId])
+}
+
+model Space {
+  id             String   @id @default(cuid())
+  organizationId String
+  workspaceId    String
+  name           String
+  order          Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folders      Folder[]
+  // Um Space pode abrigar boards de inovação standalone (opcional).
+  ideaBoards   IdeaBoard[]
+
+  @@index([organizationId])
+  @@index([workspaceId])
+}
+
+model Folder {
+  id             String   @id @default(cuid())
+  organizationId String
+  spaceId        String
+  name           String
+  order          Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  space        Space        @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  lists        List[]
+
+  @@index([organizationId])
+  @@index([spaceId])
+}
+
+model List {
+  id             String   @id @default(cuid())
+  organizationId String
+  folderId       String
+  name           String
+  order          Int      @default(0)
+  // Filtros/agrupamento/ordenação salvos. Kanban e Lista leem a
+  // mesma tabela Task — a diferença é só renderização + este config.
+  viewConfig     Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  folder       Folder       @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  tasks        Task[]
+  // Fase 5: List gerada automaticamente na aprovação final de um
+  // BusinessCase (o "Projeto"). Opcional — a imensa maioria das
+  // Lists não vem de um Business Case.
+  generatedFromBusinessCase BusinessCase?
+
+  @@index([organizationId])
+  @@index([folderId])
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Task — elemento operacional. status/priority são String
+// (validados na aplicação), não enum: fases futuras (pipeline de
+// inovação, GUT) precisam de status configuráveis por organização.
+// ───────────────────────────────────────────────────────────────────────────
+model Task {
+  id             String    @id @default(cuid())
+  organizationId String
+  listId         String
+  parentTaskId   String?
+  title          String
+  description    String?
+  status         String
+  priority       String?
+  assigneeId     String?
+  dueDate        DateTime?
+  startDate      DateTime?
+  order          Int       @default(0)
+  // Fase 4 (Projetos): marco do Gantt — sem duração, mostrado como
+  // losango na linha do tempo (usa dueDate, ou startDate se não tiver).
+  isMilestone    Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  list         List         @relation(fields: [listId], references: [id], onDelete: Cascade)
+  assignee     User?        @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+
+  // Subtarefas via self-relation. onDelete: Cascade => excluir uma
+  // task exclui suas subtasks. Ajustável para SetNull se preferirem
+  // "promover" subtasks órfãs em vez de excluí-las em cascata.
+  parentTask Task?  @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  subtasks   Task[] @relation("TaskSubtasks")
+
+  // Dependências (Fase 4/Gantt) — só finish-to-start (a mais comum;
+  // outros tipos ficam para quando/se virarem requisito real).
+  // "predecessorOf": esta task é predecessora (bloqueia) de outras.
+  // "successorOf": esta task é sucessora (bloqueada por) de outras.
+  predecessorOf TaskDependency[] @relation("PredecessorTask")
+  successorOf   TaskDependency[] @relation("SuccessorTask")
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([listId])
+  @@index([parentTaskId])
+  @@index([assigneeId])
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Fase 4 — dependência entre Tasks (Gantt). Finish-to-start: a
+// sucessora só deveria começar depois que a predecessora terminar —
+// a UI sinaliza visualmente, mas não bloqueia a mudança de status
+// (decisão: não travar o fluxo de trabalho por causa de datas).
+// ───────────────────────────────────────────────────────────────────────────
+model TaskDependency {
+  id             String   @id @default(cuid())
+  organizationId String
+  predecessorId  String
+  successorId    String
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  predecessor  Task         @relation("PredecessorTask", fields: [predecessorId], references: [id], onDelete: Cascade)
+  successor    Task         @relation("SuccessorTask", fields: [successorId], references: [id], onDelete: Cascade)
+
+  @@unique([predecessorId, successorId])
+  @@index([organizationId])
+  @@index([successorId])
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Comment e Attachment — relação polimórfica (commentableType/Id,
+// attachableType/Id). Propositalmente sem relation nativa do Prisma
+// para uma tabela por entidade: Idea (Fase 2), Project, BusinessCase
+// etc. reusam estas mesmas tabelas sem migração. Hoje aceitam
+// "Task" e "Idea" (ver constants.ts de cada módulo).
+// ───────────────────────────────────────────────────────────────────────────
+model Comment {
+  id              String   @id @default(cuid())
+  organizationId  String
+  authorId        String
+  commentableType String
+  commentableId   String
+  body            String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  author       User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([commentableType, commentableId])
+  @@index([authorId])
+}
+
+model Attachment {
+  id             String   @id @default(cuid())
+  organizationId String
+  uploadedById   String
+  attachableType String
+  attachableId   String
+  url            String
+  filename       String
+  mimeType       String
+  sizeBytes      Int
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  uploadedBy   User         @relation(fields: [uploadedById], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([attachableType, attachableId])
+  @@index([uploadedById])
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Fase 2 — Inovação (Marco 1)
+//
+// IdeaPipeline -> IdeaPipelineStage: pipeline configurável, compartilhável
+// entre boards. IdeaBoard: contêiner de ideias, senta opcionalmente numa
+// Space. Idea: elemento de origem do fluxo IDEIA → … → RESULTADO.
+// Multi-tenant: todas carregam organizationId obrigatório e indexado.
+// Comment/Attachment polimórficos reusados via commentableType "Idea".
+// ───────────────────────────────────────────────────────────────────────────
+model IdeaPipeline {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String // ex: "Pipeline de Inovação", "Pipeline de Melhoria"
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  stages       IdeaPipelineStage[]
+  boards       IdeaBoard[]
+
+  @@index([organizationId])
+}
+
+model IdeaPipelineStage {
+  id             String   @id @default(cuid())
+  organizationId String
+  pipelineId     String
+  name           String
+  order          Int      @default(0)
+  color          String?  // hex, para o Kanban de ideias
+  // String (não enum) pela mesma filosofia de Task.status: flexível
+  // para a org customizar sem migrar enum. Validado em
+  // lib/modules/innovation/constants.ts.
+  stageType      String   // "BACKLOG"|"TRIAGE"|"ANALYSIS"|"APPROVED"|"REJECTED"|"CONVERTED"
+  isFinal        Boolean  @default(false) // estágios terminais
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  pipeline     IdeaPipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  ideas        Idea[]
+
+  @@index([organizationId])
+  @@index([pipelineId, order])
+}
+
+model IdeaBoard {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  slug           String
+  description    String?
+  spaceId        String?   // opcional: linka a uma Space do workspace
+  pipelineId     String    // pipeline padrão do board
+  // Captura pública (QR Code / formulário, Fase 2/Marco 2): token
+  // opaco e único usado na URL pública `/public/idea/[publicToken]`.
+  // publicCaptureEnabled controla se a rota aceita envios — o token
+  // existe mesmo desabilitado para a URL não mudar ao reativar; só
+  // muda por regeneração explícita (recuperação de vazamento).
+  publicToken           String  @unique @default(cuid())
+  publicCaptureEnabled  Boolean @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  pipeline     IdeaPipeline @relation(fields: [pipelineId], references: [id], onDelete: Restrict)
+  space        Space?       @relation(fields: [spaceId], references: [id], onDelete: SetNull)
+  ideas        Idea[]
+
+  @@unique([organizationId, slug])
+  @@index([organizationId])
+  @@index([spaceId])
+}
+
+model Idea {
+  id               String   @id @default(cuid())
+  organizationId   String
+  boardId          String
+  pipelineStageId  String
+  title            String
+  description      String?
+  // authorId nulo = ideia enviada por QR Code/formulário público, sem
+  // conta no Trilheo (Fase 2/Marco 2). Nesse caso submitterName/Email
+  // guardam a identificação em texto livre informada no formulário.
+  authorId         String?
+  submitterName    String?
+  submitterEmail   String?
+  source           String   // "MANUAL" | "QR" | "FORM" — String, validado na app
+  // Matriz GUT (Gravidade/Urgência/Tendência), 1-5 cada — usada para
+  // priorizar o backlog. gutScore = gravity*urgency*trend, denormalizado
+  // para permitir ordenar por score sem calcular em memória.
+  gutGravity       Int?
+  gutUrgency       Int?
+  gutTrend         Int?
+  gutScore         Int?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  organization    Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  board           IdeaBoard           @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  pipelineStage   IdeaPipelineStage   @relation(fields: [pipelineStageId], references: [id], onDelete: Restrict)
+  author          User?               @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  businessCases   BusinessCase[]
+
+  @@index([organizationId])
+  @@index([organizationId, boardId])
+  @@index([pipelineStageId])
+  @@index([authorId])
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Fase 3 — Melhoria Contínua (biblioteca de ferramentas: 5 Porquês,
+// Ishikawa, Pareto, SIPOC, 5W2H, PDCA, A3, Brainstorming). Uma
+// ferramenta é uma análise anexada a uma Idea (estágio ANÁLISE do
+// fluxo central) — relação polimórfica (analyzableType/Id) no mesmo
+// molde de Comment/Attachment, hoje só "Idea", extensível depois.
+// `content` guarda a estrutura específica de cada tipo (Json), já
+// que os 8 tipos têm formatos bem diferentes entre si — validado na
+// aplicação por tipo (lib/modules/tools/schemas.ts), não no banco.
+// Cada tipo expõe "itens acionáveis" (causa raiz, ação do 5W2H...)
+// que viram Task via o módulo `task` já existente — não duplica dado.
+// ───────────────────────────────────────────────────────────────────────────
+model ImprovementTool {
+  id             String   @id @default(cuid())
+  organizationId String
+  analyzableType String
+  analyzableId   String
+  type           String // "FIVE_WHYS" | "ISHIKAWA" | "FIVE_W_TWO_H" (mais tipos depois)
+  title          String
+  content        Json
+  createdById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([analyzableType, analyzableId])
+  @@index([createdById])
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Fase 5 — Business Case. Anexado a uma Idea (estágio BUSINESS CASE do
+// fluxo central, depois de ANÁLISE/SOLUÇÃO). Campos financeiros como
+// colunas normais (não Json) — diferente de ImprovementTool, aqui a
+// estrutura é fixa e bem definida (CAPEX/OPEX/benefício/horizonte),
+// então colunas tipadas fazem mais sentido para cálculo/relatório.
+// `Float` em vez de `Decimal` de propósito: é uma ferramenta de
+// projeção/estimativa, não um livro contábil — evita a complexidade
+// de serializar Decimal do Prisma para os Client Components.
+//
+// Aprovação em dois níveis, fixo (GESTOR depois ADMIN) — não
+// configurável. "workflow multi-nível" do roadmap geral não
+// especificava a cadeia; dois níveis fixos usando a hierarquia de
+// papéis que já existe é a interpretação mais simples que ainda
+// atende "multi-nível" de verdade (ver CONTEXTO.MD).
+//
+// Aprovação final gera automaticamente um "Projeto" — decisão:
+// reaproveitar List (não criar uma entidade Project nova), no mesmo
+// espírito de "Kanban/Lista são leituras da mesma Task, nunca
+// cópias" já usado no resto do schema.
+// ───────────────────────────────────────────────────────────────────────────
+model BusinessCase {
+  id             String   @id @default(cuid())
+  organizationId String
+  ideaId         String
+  title          String
+  description    String?
+
+  // Financeiro (valores mensais/únicos na moeda da organização; sem
+  // campo de moeda ainda — assume uma moeda única por organização).
+  capex          Float // investimento inicial único
+  opexMonthly    Float // custo operacional recorrente mensal
+  benefitMonthly Float // benefício/ganho recorrente mensal esperado
+  horizonMonths  Int // horizonte de análise, em meses
+
+  // DRAFT -> PENDING_GESTOR -> PENDING_ADMIN -> APPROVED
+  //                        \-> REJECTED         (em qualquer estágio pendente)
+  status String @default("DRAFT")
+
+  gestorApprovedById String?
+  gestorApprovedAt   DateTime?
+  gestorComment      String?
+
+  adminApprovedById String?
+  adminApprovedAt   DateTime?
+  adminComment      String?
+
+  rejectedById    String?
+  rejectedAt      DateTime?
+  rejectionReason String?
+
+  // Preenchido só na aprovação final (status = APPROVED).
+  generatedListId String? @unique
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  idea            Idea            @relation(fields: [ideaId], references: [id], onDelete: Cascade)
+  createdBy       User?           @relation("BusinessCaseCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  gestorApprovedBy User?          @relation("BusinessCaseGestorApproval", fields: [gestorApprovedById], references: [id], onDelete: SetNull)
+  adminApprovedBy  User?          @relation("BusinessCaseAdminApproval", fields: [adminApprovedById], references: [id], onDelete: SetNull)
+  rejectedBy       User?          @relation("BusinessCaseRejection", fields: [rejectedById], references: [id], onDelete: SetNull)
+  generatedList    List?          @relation(fields: [generatedListId], references: [id], onDelete: SetNull)
+  benefitRecords   BenefitRecord[]
+
+  @@index([organizationId])
+  @@index([ideaId])
+}
+
+// Gestão de benefícios — previsto x realizado. Um registro por
+// período (mês) por BusinessCase; plannedAmount é denormalizado do
+// benefitMonthly no momento do registro (se o Business Case for
+// editado depois de aprovado — hoje não é possível, mas guarda o
+// valor congelado do período de qualquer forma, por segurança).
+model BenefitRecord {
+  id             String    @id @default(cuid())
+  organizationId String
+  businessCaseId String
+  period         DateTime // dia 1 do mês de referência, por convenção
+  plannedAmount  Float
+  actualAmount   Float?
+  notes          String?
+  recordedById   String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  businessCase BusinessCase @relation(fields: [businessCaseId], references: [id], onDelete: Cascade)
+  recordedBy   User?        @relation(fields: [recordedById], references: [id], onDelete: SetNull)
+
+  @@unique([businessCaseId, period])
+  @@index([organizationId])
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Fase 7 (Escala) — coleta de dados mobile. O mobile é a porta de
+// entrada: quem monta o formulário usa o portal (FormTemplate +
+// FormField, ordenados), quem coleta em campo usa o celular
+// (FormSubmission). Pensado no molde de apps tipo Checklist Fácil —
+// inspeções, checklists, coleta estruturada — sempre integrado ao
+// workflow (uma submissão pode gerar Task).
+//
+// `options` (FormField) e `answers` (FormSubmission) são Json pelo
+// mesmo motivo de ImprovementTool.content: cada tipo de campo tem
+// forma diferente, e a organização pode criar quantos formulários
+// quiser sem migração nova.
+//
+// Assinatura e foto viajam DENTRO de `answers` como data URL
+// (string base64), não como Attachment separado — decisão para
+// viabilizar a fila offline: o app enfileira o payload inteiro da
+// submissão (localStorage) quando não há rede e reenvia quando a
+// conexão volta, sem depender de um upload multi-etapas que também
+// precisaria funcionar offline. Documentado no CONTEXTO.MD como
+// simplificação consciente (produção real trocaria por upload
+// direto a um storage, com o app só enfileirando metadados).
+//
+// IoT (mencionado no roadmap como "futuro próximo") NÃO está
+// implementado — `source` já prevê o valor "IOT" para quando isso
+// virar requisito, sem precisar de migração.
+// ───────────────────────────────────────────────────────────────────────────
+model FormTemplate {
+  id             String   @id @default(cuid())
+  organizationId String
+  title          String
+  description    String?
+  isActive       Boolean  @default(true)
+  createdById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?            @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  fields       FormField[]
+  submissions  FormSubmission[]
+
+  @@index([organizationId])
+}
+
+model FormField {
+  id             String   @id @default(cuid())
+  organizationId String
+  templateId     String
+  order          Int      @default(0)
+  // "TEXT" | "NUMBER" | "SINGLE_CHOICE" | "MULTI_CHOICE" | "YES_NO" |
+  // "DATE" | "PHOTO" | "SIGNATURE" — String, validado na aplicação
+  // (mesma filosofia de Task.status: extensível sem migração).
+  type     String
+  label    String
+  required Boolean @default(false)
+  // Só usado por SINGLE_CHOICE/MULTI_CHOICE: string[] com as opções.
+  options  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  template     FormTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([templateId])
+}
+
+model FormSubmission {
+  id             String   @id @default(cuid())
+  organizationId String
+  templateId     String
+  submittedById  String?
+  // "MANUAL" (coleta feita por uma pessoa) | "IOT" (reservado, não
+  // implementado ainda — ver comentário do bloco acima).
+  source            String   @default("MANUAL")
+  // { [fieldId]: valor } — o formato do valor depende do tipo do
+  // campo (string, number, string[], data URL...).
+  answers           Json
+  // Quando foi preenchido de fato no aparelho — pode ser bem antes
+  // de `createdAt` se a submissão ficou na fila offline até
+  // encontrar rede de novo.
+  clientSubmittedAt DateTime?
+  createdAt         DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  template     FormTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  submittedBy  User?        @relation(fields: [submittedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([templateId])
+}

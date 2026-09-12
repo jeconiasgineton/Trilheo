@@ -1,0 +1,29 @@
+# dependencies
+/node_modules
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# env
+.env
+.env*.local
+
+# misc
+.DS_Store
+*.pem
+npm-debug.log*
+
+# testing
+/coverage
+
+# uploads de anexo — fora de /public de propósito (servidos por rota
+# autenticada em app/api/attachments/file/[filename], não estáticos)
+/uploads
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
