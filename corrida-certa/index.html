@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1410">
+<title>Corrida Certa</title>
+<style>
+  :root {
+    --bg:#0b1410; --card:#142019; --line:#233529; --text:#e9f3ec; --muted:#8fa699;
+    --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b; --accent:#2563eb;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f1f5f2; --card:#fff; --line:#d9e2dc; --text:#10201a; --muted:#5d7066; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  main { max-width:480px; margin:0 auto; padding:16px; padding-bottom:40px; }
+  h1 { font-size:20px; margin:4px 0 2px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px; margin-bottom:12px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+  input { width:100%; padding:10px; font-size:16px; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:10px; }
+  input:focus { outline:2px solid var(--accent); }
+  .full { grid-column:1 / -1; }
+  .verdict { text-align:center; border-radius:16px; padding:14px; border:2px solid var(--line); }
+  .verdict .tag { display:inline-block; font-weight:800; letter-spacing:.08em; padding:4px 14px; border-radius:999px; color:#fff; background:var(--muted); }
+  .verdict.ok { border-color:var(--ok); } .verdict.ok .tag { background:var(--ok); }
+  .verdict.bad { border-color:var(--bad); } .verdict.bad .tag { background:var(--bad); }
+  .verdict.warn { border-color:var(--warn); } .verdict.warn .tag { background:var(--warn); }
+  .meta { color:var(--muted); font-size:13px; margin:8px 0 10px; }
+  .metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+  .metric { background:var(--bg); border-radius:12px; padding:8px 4px; border-bottom:4px solid var(--line); }
+  .metric small { display:block; color:var(--muted); font-size:11px; }
+  .metric b { font-size:26px; }
+  .metric.ok { border-color:var(--ok); } .metric.bad { border-color:var(--bad); }
+  button { font:inherit; font-weight:600; border:0; border-radius:12px; padding:12px; cursor:pointer; color:#fff; background:var(--accent); width:100%; }
+  button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); }
+  .row { display:flex; gap:8px; margin-top:10px; }
+  details summary { cursor:pointer; font-weight:600; }
+  ul { list-style:none; padding:0; margin:8px 0 0; }
+  li { display:flex; justify-content:space-between; gap:8px; padding:8px 0; border-top:1px solid var(--line); font-size:14px; }
+  li span:last-child { color:var(--muted); white-space:nowrap; }
+  .totals { display:flex; justify-content:space-between; font-size:14px; color:var(--muted); }
+  .totals b { color:var(--text); }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Corrida Certa</h1>
+  <div class="sub">Digite os dados da oferta e veja na hora se compensa aceitar.</div>
+
+  <section class="card">
+    <div class="grid">
+      <div class="full"><label for="fare">Valor da corrida (R$)</label><input id="fare" type="text" inputmode="decimal" step="0.01" placeholder="14,01"></div>
+      <div><label for="pKm">Busca (km)</label><input id="pKm" type="text" inputmode="decimal" step="0.1" placeholder="1,3"></div>
+      <div><label for="pMin">Busca (min)</label><input id="pMin" type="text" inputmode="decimal" step="1" placeholder="4"></div>
+      <div><label for="tKm">Viagem (km)</label><input id="tKm" type="text" inputmode="decimal" step="0.1" placeholder="5,0"></div>
+      <div><label for="tMin">Viagem (min)</label><input id="tMin" type="text" inputmode="decimal" step="1" placeholder="13"></div>
+      <div class="full"><label for="rating">Nota do passageiro</label><input id="rating" type="text" inputmode="decimal" step="0.01" min="1" max="5" placeholder="4,96"></div>
+    </div>
+  </section>
+
+  <section id="result" class="verdict hidden">
+    <span class="tag" id="tag"></span>
+    <div class="meta" id="meta"></div>
+    <div class="metrics">
+      <div class="metric" id="mKm"><small>R$/km</small><b id="vKm">–</b></div>
+      <div class="metric" id="mHr"><small>R$/hora</small><b id="vHr">–</b></div>
+      <div class="metric" id="mRt"><small>Nota</small><b id="vRt">–</b></div>
+    </div>
+    <div class="row">
+      <button id="accept">Aceitei (salvar)</button>
+      <button id="clear" class="ghost">Limpar</button>
+    </div>
+  </section>
+
+  <section class="card" style="margin-top:12px">
+    <details>
+      <summary>Metas mínimas</summary>
+      <div class="grid" style="margin-top:10px">
+        <div><label for="minKm">R$/km</label><input id="minKm" type="text" inputmode="decimal" step="0.1"></div>
+        <div><label for="minHr">R$/hora</label><input id="minHr" type="text" inputmode="decimal" step="1"></div>
+        <div class="full"><label for="minRt">Nota mínima</label><input id="minRt" type="text" inputmode="decimal" step="0.01"></div>
+      </div>
+    </details>
+  </section>
+
+  <section class="card">
+    <div class="totals"><span>Hoje: <b id="tCount">0</b> corridas</span><span><b id="tSum">R$ 0,00</b> · <b id="tKmHr">R$ 0/h</b></span></div>
+    <ul id="history"></ul>
+    <div class="row"><button id="wipe" class="ghost">Zerar o dia</button></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const brl = n => n.toLocaleString('pt-BR', { style:'currency', currency:'BRL' });
+const num = id => parseFloat(String($(id).value).replace(',', '.'));
+const store = {
+  get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+};
+
+// Pure logic: same math the video overlay shows (R$14,01 / 6,3 km = 2,22; / 17 min = 49).
+function evaluate({ fare, pKm, pMin, tKm, tMin, rating }, goals) {
+  const km = pKm + tKm, min = pMin + tMin;
+  if (!(fare > 0) || !(km > 0) || !(min > 0)) return null;
+  const perKm = fare / km, perHr = fare / (min / 60);
+  const okKm = perKm >= goals.minKm, okHr = perHr >= goals.minHr;
+  const hasRt = Number.isFinite(rating);
+  const okRt = !hasRt || rating >= goals.minRt;
+  const passed = okKm + okHr;
+  const verdict = !okRt ? 'bad' : passed === 2 ? 'ok' : passed === 0 ? 'bad' : 'warn';
+  return { km, min, perKm, perHr, okKm, okHr, okRt, hasRt, verdict };
+}
+
+const goals = Object.assign({ minKm:1.8, minHr:40, minRt:4.7 }, store.get('goals', {}));
+['minKm','minHr','minRt'].forEach(k => {
+  $(k).value = goals[k];
+  $(k).addEventListener('input', () => {
+    const v = num(k); if (v > 0) { goals[k] = v; store.set('goals', goals); render(); }
+  });
+});
+
+let current = null;
+const LABEL = { ok:'ACEITAR', bad:'RECUSAR', warn:'ANALISAR' };
+
+function render() {
+  const r = evaluate({ fare:num('fare'), pKm:num('pKm') || 0, pMin:num('pMin') || 0,
+                       tKm:num('tKm') || 0, tMin:num('tMin') || 0, rating:num('rating') }, goals);
+  current = r;
+  $('result').classList.toggle('hidden', !r);
+  if (!r) return;
+  $('result').className = 'verdict ' + r.verdict;
+  $('tag').textContent = LABEL[r.verdict];
+  $('meta').textContent = `${Math.round(r.min)} min · ${r.km.toFixed(1).replace('.', ',')} km`;
+  $('vKm').textContent = r.perKm.toFixed(2).replace('.', ',');
+  $('vHr').textContent = Math.round(r.perHr);
+  $('vRt').textContent = r.hasRt ? rating2(num('rating')) : '–';
+  $('mKm').className = 'metric ' + (r.okKm ? 'ok' : 'bad');
+  $('mHr').className = 'metric ' + (r.okHr ? 'ok' : 'bad');
+  $('mRt').className = 'metric ' + (!r.hasRt ? '' : r.okRt ? 'ok' : 'bad');
+}
+const rating2 = n => n.toFixed(2).replace('.', ',');
+['fare','pKm','pMin','tKm','tMin','rating'].forEach(id => $(id).addEventListener('input', render));
+
+// History (today only)
+const today = () => new Date().toISOString().slice(0, 10);
+let rides = store.get('rides', []).filter(r => r.day === today());
+
+function renderHistory() {
+  const sum = rides.reduce((a, r) => a + r.fare, 0);
+  const hours = rides.reduce((a, r) => a + r.min, 0) / 60;
+  $('tCount').textContent = rides.length;
+  $('tSum').textContent = brl(sum);
+  $('tKmHr').textContent = hours ? `${brl(sum / hours)}/h` : 'R$ 0/h';
+  $('history').innerHTML = '';
+  rides.slice().reverse().forEach(r => {
+    const li = document.createElement('li');
+    const a = document.createElement('span'), b = document.createElement('span');
+    a.textContent = brl(r.fare);
+    b.textContent = `${r.perKm.toFixed(2).replace('.', ',')}/km · ${Math.round(r.perHr)}/h`;
+    li.append(a, b); $('history').append(li);
+  });
+}
+
+$('accept').addEventListener('click', () => {
+  if (!current) return;
+  rides.push({ day:today(), fare:num('fare'), min:current.min, perKm:current.perKm, perHr:current.perHr });
+  store.set('rides', rides); renderHistory(); clearForm();
+});
+function clearForm() { ['fare','pKm','pMin','tKm','tMin','rating'].forEach(id => $(id).value = ''); render(); $('fare').focus(); }
+$('clear').addEventListener('click', clearForm);
+$('wipe').addEventListener('click', () => { if (confirm('Zerar as corridas de hoje?')) { rides = []; store.set('rides', rides); renderHistory(); } });
+
+renderHistory();
+</script>
+</body>
+</html>
